@@ -11,7 +11,15 @@ class StoreService: NSObject, SKProductsRequestDelegate {
     typealias Next = (Result) -> Void
     typealias RequestToken = String
     let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
-    static let sharedInstance = StoreService()
+    static private var _sharedInstance: StoreService?
+    static var sharedInstance: StoreService {
+        if let instance = _sharedInstance {
+            return instance
+        }
+        let instance = StoreService()
+        _sharedInstance = instance
+        return instance
+    }
 
     var request: SKProductsRequest? = nil
     var products: [SKProduct]? = nil
@@ -60,9 +68,7 @@ class StoreService: NSObject, SKProductsRequestDelegate {
     func cancelProductRequest(token: RequestToken) {
         nextBlocks.removeValueForKey(token)
         if nextBlocks.isEmpty {
-            wantsRequest = false
-            request?.cancel()
-            request = nil
+            completed()
         }
     }
 
@@ -90,20 +96,27 @@ class StoreService: NSObject, SKProductsRequestDelegate {
         products = response.products
         sendAll(.Success(response.products))
         nextBlocks.removeAll()
-        self.request = nil
-        wantsRequest = false
+        completed()
     }
 
     func request(request: SKRequest, didFailWithError error: NSError) {
         sendAll(.Failure(error))
         nextBlocks.removeAll()
-        self.request = nil
-        wantsRequest = false
+        completed()
     }
 
     func sendAll(result: Result) {
         for (_, next) in nextBlocks {
             next(result)
+        }
+    }
+
+    func completed() {
+        request?.cancel()
+        request = nil
+        wantsRequest = false
+        if self == StoreService._sharedInstance {
+            StoreService._sharedInstance = nil
         }
     }
 }
