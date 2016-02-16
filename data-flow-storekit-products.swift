@@ -1,4 +1,5 @@
 import UIKit
+import Reachability
 import StoreKit
 
 class StoreService: NSObject, SKProductsRequestDelegate {
@@ -7,25 +8,59 @@ class StoreService: NSObject, SKProductsRequestDelegate {
         case Failure(ErrorType)
     }
 
-    typealias Completion = (Result) -> Void
+    typealias Next = (Result) -> Void
     let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
     static let sharedInstance = StoreService()
 
     var request: SKProductsRequest? = nil
     var products: [SKProduct]? = nil
-    var completionBlocks = [Completion]()
+    var nextBlocks = [Next]()
+    var wantsRequest = false
+    var reachable = true
 
-    func getProducts(completion: Completion) {
+    let reachability = Reachability.reachabilityForInternetConnection()
+
+    override init() {
+        super.init()
+        reachability.reachableBlock = { [weak self] _ in
+            guard let strongSelf = self else { return }
+            strongSelf.reachable = true
+            if strongSelf.wantsRequest {
+                strongSelf.fetchProducts()
+            }
+        }
+        reachability.unreachableBlock = { [weak self] _ in
+            guard let strongSelf = self else { return }
+            strongSelf.reachable = false
+            if let request = strongSelf.request {
+                strongSelf.wantsRequest = true
+                request.cancel()
+            }
+            let error = NSError(domain: "StoreService", code: 0, userInfo: nil)
+            strongSelf.sendAll(.Failure(error))
+        }
+        reachability.startNotifier()
+    }
+
+    deinit {
+        reachability.stopNotifier()
+    }
+
+    func getProducts(next: Next) {
         if let products = self.products {
-            completion(.Success(products))
+            next(.Success(products))
         } else {
-            completionBlocks.append(completion)
+            nextBlocks.append(next)
             fetchProducts()
         }
     }
 
     func fetchProducts() {
         guard self.request == nil else {
+            return
+        }
+        guard reachable else {
+            wantsRequest = true
             return
         }
         let request = SKProductsRequest(productIdentifiers: identifiers)
@@ -36,17 +71,21 @@ class StoreService: NSObject, SKProductsRequestDelegate {
 
     func productsRequest(request: SKProductsRequest, didReceiveResponse response: SKProductsResponse) {
         products = response.products
-        for completion in completionBlocks {
-            completion(.Success(response.products))
-        }
-        completionBlocks.removeAll()
+        sendAll(.Success(response.products))
+        nextBlocks.removeAll()
+        wantsRequest = false
     }
 
     func request(request: SKRequest, didFailWithError error: NSError) {
-        for completion in completionBlocks {
-            completion(.Failure(error))
+        sendAll(.Failure(error))
+        nextBlocks.removeAll()
+        wantsRequest = false
+    }
+
+    func sendAll(result: Result) {
+        for next in nextBlocks {
+            next(result)
         }
-        completionBlocks.removeAll()
     }
 }
 
