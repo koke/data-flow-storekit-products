@@ -9,12 +9,13 @@ class StoreService: NSObject, SKProductsRequestDelegate {
     }
 
     typealias Next = (Result) -> Void
+    typealias RequestToken = String
     let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
     static let sharedInstance = StoreService()
 
     var request: SKProductsRequest? = nil
     var products: [SKProduct]? = nil
-    var nextBlocks = [Next]()
+    var nextBlocks = [RequestToken: Next]()
     var wantsRequest = false
     var reachable = true
 
@@ -46,13 +47,29 @@ class StoreService: NSObject, SKProductsRequestDelegate {
         reachability.stopNotifier()
     }
 
-    func getProducts(next: Next) {
+    func getProducts(next: Next) -> RequestToken? {
         if let products = self.products {
             next(.Success(products))
+            return nil
         } else {
-            nextBlocks.append(next)
             fetchProducts()
+            return appendNext(next)
         }
+    }
+
+    func cancelProductRequest(token: RequestToken) {
+        nextBlocks.removeValueForKey(token)
+        if nextBlocks.isEmpty {
+            wantsRequest = false
+            request?.cancel()
+            request = nil
+        }
+    }
+
+    func appendNext(next: Next) -> RequestToken {
+        let uuid = NSUUID().UUIDString
+        nextBlocks[uuid] = next
+        return uuid
     }
 
     func fetchProducts() {
@@ -73,17 +90,19 @@ class StoreService: NSObject, SKProductsRequestDelegate {
         products = response.products
         sendAll(.Success(response.products))
         nextBlocks.removeAll()
+        self.request = nil
         wantsRequest = false
     }
 
     func request(request: SKRequest, didFailWithError error: NSError) {
         sendAll(.Failure(error))
         nextBlocks.removeAll()
+        self.request = nil
         wantsRequest = false
     }
 
     func sendAll(result: Result) {
-        for next in nextBlocks {
+        for (_, next) in nextBlocks {
             next(result)
         }
     }
@@ -92,8 +111,18 @@ class StoreService: NSObject, SKProductsRequestDelegate {
 class PlansListViewController: UITableViewController {
     // ...
 
+    var productRequest: StoreService.RequestToken? = nil
+
+    override func viewDidDisappear(animated: Bool) {
+        super.viewDidAppear(animated)
+        if let productRequest = self.productRequest {
+            StoreService.sharedInstance.cancelProductRequest(productRequest)
+            self.productRequest = nil
+        }
+    }
+
     func fetchProducts() {
-        StoreService.sharedInstance.getProducts { result in
+        productRequest = StoreService.sharedInstance.getProducts { result in
             switch result {
             case .Success(let products):
                 // Reload data showing products
@@ -107,8 +136,18 @@ class PlansListViewController: UITableViewController {
 class PlanDetailsViewController: UITableViewController {
     // ...
 
+    var productRequest: StoreService.RequestToken? = nil
+
+    override func viewDidDisappear(animated: Bool) {
+        super.viewDidAppear(animated)
+        if let productRequest = self.productRequest {
+            StoreService.sharedInstance.cancelProductRequest(productRequest)
+            self.productRequest = nil
+        }
+    }
+
     func fetchProducts() {
-        StoreService.sharedInstance.getProducts { result in
+        productRequest = StoreService.sharedInstance.getProducts { result in
             switch result {
             case .Success(let products):
                 // Reload data showing products
