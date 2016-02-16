@@ -2,7 +2,7 @@ import UIKit
 import StoreKit
 
 class StoreService: NSObject, SKProductsRequestDelegate {
-    typealias Completion = [SKProduct] -> Void
+    typealias Completion = ([SKProduct]?, ErrorType?) -> Void
     let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
     static let sharedInstance = StoreService()
 
@@ -10,9 +10,9 @@ class StoreService: NSObject, SKProductsRequestDelegate {
     var products: [SKProduct]? = nil
     var completionBlocks = [Completion]()
 
-    func getProducts(completion: [SKProduct] -> Void) {
+    func getProducts(completion: Completion) {
         if let products = self.products {
-            completion(products)
+            completion(products, nil)
         } else {
             completionBlocks.append(completion)
             fetchProducts()
@@ -32,19 +32,31 @@ class StoreService: NSObject, SKProductsRequestDelegate {
     func productsRequest(request: SKProductsRequest, didReceiveResponse response: SKProductsResponse) {
         products = response.products
         for completion in completionBlocks {
-            completion(response.products)
+            completion(response.products, nil)
         }
         completionBlocks.removeAll()
     }
 
+    func request(request: SKRequest, didFailWithError error: NSError) {
+        for completion in completionBlocks {
+            completion(nil, error)
+        }
+        completionBlocks.removeAll()
+    }
 }
 
 class PlansListViewController: UITableViewController {
     // ...
 
     func fetchProducts() {
-        StoreService.sharedInstance.getProducts { products in
-            // Reload data showing products
+        StoreService.sharedInstance.getProducts { products, error in
+            if let products = products {
+                // Reload data showing products
+            } else if let error = error {
+                // Show error
+            } else {
+                // Shouldn't happen
+            }
         }
     }
 }
@@ -53,8 +65,14 @@ class PlanDetailsViewController: UITableViewController {
     // ...
 
     func fetchProducts() {
-        StoreService.sharedInstance.getProducts { products in
-            // Reload data showing products
+        StoreService.sharedInstance.getProducts { products, error in
+            if let products = products {
+                // Reload data showing products
+            } else if let error = error {
+                // Show error
+            } else {
+                // Shouldn't happen
+            }
         }
     }
 }
