@@ -1,122 +1,66 @@
 import UIKit
 import Reachability
+import RxSwift
 import StoreKit
 
-class StoreService: NSObject, SKProductsRequestDelegate {
-    enum Result {
-        case Success([SKProduct])
-        case Failure(ErrorType)
-    }
+class StoreService: NSObject {
+    class ProductRequestDelegate: NSObject, SKProductsRequestDelegate {
+        typealias Success = [SKProduct] -> Void
+        typealias Failure = ErrorType -> Void
 
-    typealias Next = (Result) -> Void
-    typealias RequestToken = String
-    let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
-    static private var _sharedInstance: StoreService?
-    static var sharedInstance: StoreService {
-        if let instance = _sharedInstance {
-            return instance
+        let onSuccess: Success
+        let onError: Failure
+
+        init(onSuccess: Success, onError: Failure) {
+            self.onSuccess = onSuccess
+            self.onError = onError
         }
-        let instance = StoreService()
-        _sharedInstance = instance
-        return instance
-    }
 
-    var request: SKProductsRequest? = nil
-    var products: [SKProduct]? = nil
-    var nextBlocks = [RequestToken: Next]()
-    var wantsRequest = false
-    var reachable = true
-
-    let reachability = Reachability.reachabilityForInternetConnection()
-
-    override init() {
-        super.init()
-        reachability.reachableBlock = { [weak self] _ in
-            guard let strongSelf = self else { return }
-            strongSelf.reachable = true
-            if strongSelf.wantsRequest {
-                strongSelf.fetchProducts()
-            }
+        func productsRequest(request: SKProductsRequest, didReceiveResponse response: SKProductsResponse) {
+            onSuccess(response.products)
         }
-        reachability.unreachableBlock = { [weak self] _ in
-            guard let strongSelf = self else { return }
-            strongSelf.reachable = false
-            if let request = strongSelf.request {
-                strongSelf.wantsRequest = true
-                request.cancel()
-            }
-            let error = NSError(domain: "StoreService", code: 0, userInfo: nil)
-            strongSelf.sendAll(.Failure(error))
-        }
-        reachability.startNotifier()
-    }
 
-    deinit {
-        reachability.stopNotifier()
-    }
-
-    func getProducts(next: Next) -> RequestToken? {
-        if let products = self.products {
-            next(.Success(products))
-            return nil
-        } else {
-            fetchProducts()
-            return appendNext(next)
+        func request(request: SKRequest, didFailWithError error: NSError) {
+            onError(error)
         }
     }
 
-    func cancelProductRequest(token: RequestToken) {
-        nextBlocks.removeValueForKey(token)
-        if nextBlocks.isEmpty {
-            completed()
+    class ProductRequestDisposable: Disposable {
+        let request: SKProductsRequest
+        let delegate: SKProductsRequestDelegate
+
+        init(request: SKProductsRequest, delegate: SKProductsRequestDelegate) {
+            self.request = request
+            self.delegate = delegate
+        }
+
+        func dispose() {
+            request.cancel()
         }
     }
+    static let identifiers = Set([ "com.wordpress.test.premium.1year", "com.wordpress.test.business.1year"])
+    static let reachability = Reachability.internetConnection
 
-    func appendNext(next: Next) -> RequestToken {
-        let uuid = NSUUID().UUIDString
-        nextBlocks[uuid] = next
-        return uuid
+    static var products: Observable<[SKProduct]> {
+        return productsRequest
+            .pausable(reachability)
+            .shareReplayLatestWhileConnected()
     }
 
-    func fetchProducts() {
-        guard self.request == nil else {
-            return
-        }
-        guard reachable else {
-            wantsRequest = true
-            return
-        }
-        let request = SKProductsRequest(productIdentifiers: identifiers)
-        request.delegate = self
-        request.start()
-        self.request = request
-    }
+    static private var productsRequest: Observable<[SKProduct]> {
+        return Observable.create { observer in
+            let request = SKProductsRequest(productIdentifiers: identifiers)
+            let delegate = ProductRequestDelegate(
+                onSuccess: { products in
+                    observer.onNext(products)
+                }, onError: { error in
+                    observer.onError(error)
+            })
+            request.delegate = delegate
 
-    func productsRequest(request: SKProductsRequest, didReceiveResponse response: SKProductsResponse) {
-        products = response.products
-        sendAll(.Success(response.products))
-        nextBlocks.removeAll()
-        completed()
-    }
+            request.start()
 
-    func request(request: SKRequest, didFailWithError error: NSError) {
-        sendAll(.Failure(error))
-        nextBlocks.removeAll()
-        completed()
-    }
-
-    func sendAll(result: Result) {
-        for (_, next) in nextBlocks {
-            next(result)
-        }
-    }
-
-    func completed() {
-        request?.cancel()
-        request = nil
-        wantsRequest = false
-        if self == StoreService._sharedInstance {
-            StoreService._sharedInstance = nil
+            return ProductRequestDisposable(request: request, delegate: delegate)
         }
     }
 }
@@ -124,50 +68,36 @@ class StoreService: NSObject, SKProductsRequestDelegate {
 class PlansListViewController: UITableViewController {
     // ...
 
-    var productRequest: StoreService.RequestToken? = nil
+    let bag = DisposeBag()
 
-    override func viewDidDisappear(animated: Bool) {
-        super.viewDidAppear(animated)
-        if let productRequest = self.productRequest {
-            StoreService.sharedInstance.cancelProductRequest(productRequest)
-            self.productRequest = nil
-        }
-    }
-
-    func fetchProducts() {
-        productRequest = StoreService.sharedInstance.getProducts { result in
-            switch result {
-            case .Success(let products):
-                // Reload data showing products
-            case .Failure(let error):
-                // Show error
-            }
-        }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        StoreService.products
+            .subscribe(
+                onNext: { products in
+                    // Reload data showing products
+                }, onError: { error in
+                    // Show error
+            })
+            .addDisposableTo(bag)
     }
 }
 
 class PlanDetailsViewController: UITableViewController {
     // ...
 
-    var productRequest: StoreService.RequestToken? = nil
+    let bag = DisposeBag()
 
-    override func viewDidDisappear(animated: Bool) {
-        super.viewDidAppear(animated)
-        if let productRequest = self.productRequest {
-            StoreService.sharedInstance.cancelProductRequest(productRequest)
-            self.productRequest = nil
-        }
-    }
-
-    func fetchProducts() {
-        productRequest = StoreService.sharedInstance.getProducts { result in
-            switch result {
-            case .Success(let products):
-                // Reload data showing products
-            case .Failure(let error):
-                // Show error
-            }
-        }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        StoreService.products
+            .subscribe(
+                onNext: { products in
+                    // Reload data showing products
+                }, onError: { error in
+                    // Show error
+            })
+            .addDisposableTo(bag)
     }
 }
 
